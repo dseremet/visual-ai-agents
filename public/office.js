@@ -242,7 +242,7 @@ function cardHtml(s, gone) {
     ['Project', s.cwd],
     ['Opened', `${clock(s.startedAt)} (${span(now - (s.startedAt || now))} ago)`],
     [s.state === 'working' ? 'Working since' : 'Idle since', `${clock(s.stateSince)} (${span(quietMs(s))})`],
-    ['Where', s.background ? 'Background session, no terminal tab' : s.tty ? `Terminal tab on ${s.tty}` : 'Unknown terminal'],
+    ['Where', s.background ? 'Background session, no terminal tab' : s.terminal ? `${s.terminal.name} on ${s.tty}` : s.tty ? `Unknown terminal on ${s.tty}` : 'Unknown terminal'],
     ['Model', s.model],
     ['Branch', s.branch && s.branch !== 'HEAD' ? s.branch : null],
     ['Process', `pid ${s.pid}`],
@@ -285,7 +285,7 @@ function renderActions(gone) {
       </div>`;
     return;
   }
-  const canFocus = s.tty && !s.background;
+  const canFocus = s.terminal && !s.background;
   $('card-actions').innerHTML = `
     ${canFocus ? '<button type="button" class="btn primary" data-act="focus">Go to its terminal</button>' : ''}
     <button type="button" class="btn" data-act="copy">Copy resume command</button>
@@ -357,7 +357,7 @@ async function onCardClick(e) {
     return renderCard();
   }
   if (act === 'focus') {
-    note.textContent = (await goToTerminal(openPid)) || 'Its Terminal tab is now in front.';
+    note.textContent = (await goToTerminal(openPid)) || 'Its terminal is now in front.';
     return;
   }
   if (act === 'quit' || act === 'quit-no') {
@@ -423,16 +423,26 @@ function toast(text) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000);
 }
 
-// Bring a session's terminal tab to the front. Returns a sentence to show if it could not.
+// Bring a session's terminal tab to the front. Returns a sentence to show when that did not fully work.
 async function goToTerminal(pid) {
   const s = sessions.find((x) => x.pid === pid);
+  const name = s ? `“${s.name}”` : 'This session';
   if (DEMO) return 'This is demo data, so there is no real terminal to open.';
-  if (s && (s.background || !s.tty)) return `“${s.name}” runs in the background and has no terminal tab. Open its desk for the resume command.`;
+  if (s && s.background) return `${name} runs in the background and has no terminal tab. Open its desk for the resume command.`;
+  if (s && !s.terminal) return `Couldn't tell which app ${name} runs in, so there is no tab to bring forward.`;
   const r = await post('focus', pid);
+  if (r.ok && r.level === 'app') return `${r.app} is in front, but it can't be asked for one tab. Look for the one running ${name}.`;
+  if (r.ok && r.level === 'pane') return 'Switched tmux to its pane, but couldn\'t tell which app is showing that tmux.';
   if (r.ok) return '';
-  return r.reason === 'gone'
-    ? 'This session has already ended.'
-    : 'Couldn\'t find its tab in Terminal. If macOS asked for permission to control Terminal, allow it and try again.';
+  switch (r.reason) {
+    case 'gone': return 'This session has already ended.';
+    case 'no-terminal': return `${name} isn't running in a terminal window.`;
+    case 'not-found': return `Couldn't find its tab in ${r.app}.`;
+    case 'permission': return `macOS doesn't allow controlling ${r.app}. Turn it on in System Settings › Privacy & Security › Automation, then try again.`;
+    case 'timeout': return `${r.app} didn't answer. If macOS is asking for permission to control it, allow it and try again.`;
+    case 'detached': return `It runs in a tmux session no terminal is attached to. Attach with: tmux attach -t '${r.session.replace(/'/g, "'\\''")}'`;
+    default: return `Couldn't bring ${r.app || 'its terminal'} to the front.`;
+  }
 }
 
 $('floor').addEventListener('click', async (e) => {
